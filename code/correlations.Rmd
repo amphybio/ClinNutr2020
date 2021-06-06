@@ -1,0 +1,347 @@
+---
+title: "Correlações Entre Miocinas e Dados Somatométricos"
+author: "Leonardo R. Gama - leonardo.gama@usp.br"
+date: "15/08/2020"
+output:
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: false
+    code_folding: hide
+    df_print: paged
+---
+
+<!--
+   - MIT License
+   -
+   - Copyright 2021 Alexandre Ferreira Ramos
+   -
+   - Permission is hereby granted, free of charge, to any person obtaining a
+   - copy of this software and associated documentation files (the "Software"),
+   - to deal in the Software without restriction, including without limitation
+   - the rights to use, copy, modify, merge, publish, distribute, sublicense,
+   - and/or sell copies of the Software, and to permit persons to whom the
+   - Software is furnished to do so, subject to the following conditions:
+   -
+   - The above copyright notice and this permission notice shall be included in
+   - all copies or substantial portions of the Software.
+   -
+   - THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   - IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   - FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+   - THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   - LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   - FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   - DEALINGS IN THE SOFTWARE.
+   -->
+
+<!--
+   - Project:  ClinNutr2021 - AMPhyBio Laboratory <github.com/amphybio/ClinNutr2021>
+   - Authors:  Leonardo Gama <leonardo.gama@usp.br>
+   - Version:  1.0
+   - Created:  15-08-2020
+   - Updated:  05-06-2021
+   - Compile:  Rscript -e 'rmarkdown::render("correlations.Rmd")'
+   -->
+
+```{r setup, include=FALSE}
+library(knitr)
+library(rprojroot)
+opts_knit$set(root.dir=find_root(has_file('LICENSE.txt')))
+opts_chunk$set(cache=TRUE, warning=FALSE, fig.align='center', fig.dim=c(10, 13))
+options(width=100)
+```
+
+```{r imports, include=FALSE}
+pkgs <- c(
+          'autoimage',      # color scale legend
+          'magrittr',       # pipe operator (%>%)
+          'RColorBrewer'    # color palettes
+         )
+
+not_installed <- !pkgs %in% rownames(installed.packages())
+if (any(not_installed)) install.packages(pkgs[not_installed])
+lapply(pkgs, library, character=TRUE)
+
+data(myokines)
+```
+
+```{r subset, include=FALSE}
+# Select myokines columns.
+i <- EXCEL_COLS[c('AA', 'AP')]
+myokines <- names(raw_dat)[i[1]:i[2]]
+
+# Reorder.
+myok_ord <- c('FABP3', 'FSTL', 'BDNF', 'IL', 'Irisin', 'Myostatin')
+myokines <- unlist(lapply(myok_ord, grep, myokines, value=TRUE))
+site_ord <- c('muscle', 'plasma|serum', 'tumor')
+myokines <- unlist(lapply(site_ord, grep, myokines, value=TRUE))
+
+# Log transformation.
+myok_dat <- raw_dat[, myokines] %>% lapply(log10) %>% data.frame
+
+# Pretty labels.
+myokines <- myokines %>% sub(' |_', ' (', .) %>% paste0(')')
+names(myok_dat) <- myokines
+
+# Select somatometric and inflamatory markers columns.
+i <- EXCEL_COLS[c('E', 'H', 'AY', 'BC', 'BF', 'O', 'Q', 'R', 'X', 'Y', 'Z')]
+somato <- names(raw_dat)[c(i[1]:i[2], i[3], i[4]:i[5], i[6:11])]
+somato_dat <- raw_dat[, somato]
+
+# Build data.frame with relevant variables.  
+group <- raw_dat[[ grep('group', names(raw_dat))[1] ]]
+bmi <- raw_dat[[ grep('BMI', names(raw_dat)) ]]
+dat <- cbind(group, bmi, myok_dat, somato_dat)
+cases <- (group == 'CC')
+```
+
+## Cálculos
+
+Coeficientes parciais de correlação de Spearman ajustados para IMC em ambos os
+grupos entre miocinas e dados antropométricos - peso atual, perda de peso,
+composição corporal (músculo esquelético, tecido adiposo visceral, tecido
+adiposo subcutâneo). Pedido do revisor:
+
+>_Please provide in both patients:_
+>
+>  1. _a correlation matrix between myokines and somatometric data, as well as_
+>  2. _a correlation matrix between myokines and somatometric data using partial
+>  **Spearman's** correlation coefficients adjusted for BMI for both patients._
+
+```{r calculation}
+spearman_conf_int <- function(rho, n, conf.level=0.95) {
+    # Calculate two-sided confidence interval for Spearman's rank correlation
+    # using Fisher transformation, with a standard error for z as estimated by
+    # Fieller et al. (1957). Code based on cor.test() for Pearson's correlation.
+    sigma <- 1.03/sqrt(n - 3)
+    z <- atanh(rho)
+    ci <-  z + c(-1, 1) * sigma * qnorm((1 + conf.level)/2)
+    ci <- tanh(ci)
+    attr(ci, 'conf.level') <- conf.level
+    return(ci)
+}
+
+par_cor <- function(x, y, covar, data, subset, method=c('pearson', 'spearman'), conf.level=0.95) {
+    # Calculate partial correlation of 'x' and 'y' with 'covar' as covariate.
+    # Statisticts are for the two-sided alternative hypothesis.
+    method <- match.arg(method)
+    if (!missing(data)) {
+        x <- data[, x]
+        y <- data[, y]
+        covar <- data[, covar]
+    }
+    if (!missing(subset)) {
+        x <- x[subset]
+        y <- y[subset]
+        covar <- covar[subset]
+    }
+
+    # Remove samples with missing data.
+    ok <- complete.cases(x, y, covar)
+    x <- x[ok]
+    y <- y[ok]
+    covar <- covar[ok]
+
+    mean_x <- mean(x)
+    mean_y <- mean(y)
+
+    # Adjust by the covariate.
+    x <- lm(x ~ covar)$residuals
+    y <- lm(y ~ covar)$residuals
+
+    # Correlation and confidence interval.
+    res <- suppressWarnings(cor.test(x, y, method=method, conf.level=conf.level))
+    res$n <- length(x)
+    if (method == 'spearman')
+        res$conf.int <- spearman_conf_int(res$estimate, res$n, conf.level)
+
+    res$x <- x + mean_x
+    res$y <- y + mean_y
+    return(res)
+}
+
+groups <- c('cases', 'control')
+methods <- c('pearson', 'spearman')
+types <- c('unadjusted', 'adjusted')
+
+# Calculate correlations for all possible scenarios.
+cors <- list()
+for (group in groups) for (method in 'spearman') for (type in types) {
+    i <- paste(group, method, type, sep='_')
+    cors[[i]] <- length(myokines) %>% replicate(list()) %>% setNames(myokines)
+    subset <- if (group == 'cases') cases else !cases
+    for (m in myokines) for (s in somato) {
+        if (type == 'unadjusted') {
+            x <- dat[subset, m]
+            y <- dat[subset, s]
+            res <- cor.test(x, y, method=method)
+            res$x <- x
+            res$y <- y
+            res$n <- sum(complete.cases(x, y))
+            if (method == 'spearman') {
+                res$conf.int <- spearman_conf_int(res$estimate, res$n)
+            }
+        } else {
+            res <- par_cor(m, s, 'bmi', data=dat, subset=subset, method=method)
+        }
+        cors[[i]][[m]][[s]] <- res
+    }
+}
+
+# Create a table from results.
+cors_table <- list()
+for (group in groups) {
+    ii <- grep(group, names(cors), value=TRUE)
+
+    #prefix <- sub(paste0(group, '_'), '', ii)
+    prefix <- sub('.+_', '', ii)
+    headers <- c('cor', 'p', 'ci_lo', 'ci_hi')
+    headers <- lapply(prefix, function(x) paste(x, headers, sep='_'))
+    headers <- c('x', 'y', 'n', unlist(headers))
+
+    tab <- data.frame()
+    for (m in myokines) for (s in somato) {
+        row <- list(m, s, cors[[ii[1]]][[m]][[s]]$n)
+        for (i in ii) {
+            res <- cors[[i]][[m]][[s]]
+            row <- c(row, res$estimate, res$p.value, res$conf.int)
+        }
+        tab <- rbind(tab, unname(row))
+    }
+    colnames(tab) <- headers
+    rownames(tab) <- NULL
+    cors_table[[group]] <- tab
+}
+```
+
+```{r print.table, rows.print=15}
+cors_table$cases
+cors_table$control
+```
+
+```{r save.table, eval=FALSE, include=FALSE}
+dir.create('results', showWarnings=FALSE)
+write.table(cors_table$cases, file='results/correlations-cases.tsv', quote=FALSE, sep='\t', row.names=FALSE)
+write.table(cors_table$control, file='results/correlations-control.tsv', quote=FALSE, sep='\t', row.names=FALSE)
+```
+
+## Visualization {.tabset}
+
+```{r plot}
+pal <- brewer.pal(11, 'RdBu')[2:10]
+color <- colorRampPalette(pal)(201)
+
+cor_subplot <- function(x, y, correlations, ...) {
+    current <- par('mfg')
+    i <- current[1]
+    j <- current[2]
+    m <- current[3]
+    n <- current[4]
+    row <- n*(i - 1) + j
+
+    # Get values from the 'correlations' table passed as argument.
+    corr <- correlations[[i]][[j]]
+
+    # Background color.
+    idx <- round(100*(corr$estimate + 1) + 1)
+    op <- par(usr=c(0, 1, 0, 1))
+    symbols(.5, .5, rectangles=matrix(c(1, 1), nrow=1), bg=color[idx], fg=NULL, inches=FALSE, add=TRUE)
+    par(op)
+
+    # Data points and regression line.  Note that x and y are swapped.
+    points(corr$y, corr$x, pch=20, cex=2.2, col='#00000060', ...)
+    abline(lm(corr$x ~ corr$y), lwd=1.5)
+
+    par(usr=c(0, 1, 0, 1))
+
+    # Add legend.
+    symbols(.5, .08, rectangles=matrix(c(1, .16), nrow=1), bg='white', fg=NULL, add=TRUE)
+    #subtext <- sprintf("[%.2f, %.2f]", corr$conf.int[1], corr$conf.int[2])
+    subtext <- sprintf("%.3f", corr$p.value)
+    plot_text <- function(...) mtext(subtext, side=1, line=-1.1, cex=0.8, ...)
+    if (corr$p.value < .05)
+        plot_text(font=2, col='darkred')
+    else
+        plot_text(font=1, col='gray20')
+
+    # Panel legend.
+    panel_leg <- function(...) {
+        mtext(..., line=2.5, las=2, cex=1)
+    }
+    # Topmost row.
+    if (i == 1)
+        panel_leg(somato[j], side=3)
+    # Leftmost column.
+    if (j == 1)
+        panel_leg(myokines[i], side=2)
+}
+
+cor_plot <- function(data, main, ...) {
+    m <- length(myokines)
+    n <- length(somato)
+    suppressWarnings(pairs(data, horInd=1:m, verInd=(m+1):(m+n), upper.panel=cor_subplot,
+                           gap=0, oma=c(3, 15, 22, 3), ...))
+    title(main, line=2.2, cex.main=1.5, adj=0.58)
+}
+```
+
+### Cases - Unadjusted
+```{r plot1}
+main <- sprintf("Cases Samples - Spearmans's Correlation - Unadjusted")
+cor_plot(dat[cases, -(1:2)], main, correlations=cors$cases_spearman_unadjusted)
+```
+
+### Control - Unadjusted
+```{r plot2}
+main <- sprintf("Control Samples - Spearmans's Correlation - Unadjusted")
+cor_plot(dat[!cases, -(1:2)], main, correlations=cors$control_spearman_unadjusted)
+```
+
+### Cases - Adjusted
+```{r plot3}
+main <- sprintf("Cases Samples - Spearmans's Correlation - Adjusted by BMI")
+cor_plot(dat[cases, -(1:2)], main, correlations=cors$cases_spearman_adjusted)
+```
+
+### Control - Adjusted
+```{r plot4}
+main <- sprintf("Control Samples - Spearmans's Correlation - Adjusted by BMI")
+cor_plot(dat[!cases, -(1:2)], main, correlations=cors$control_spearman_adjusted)
+```
+
+##
+```{r scale, fig.dim=c(10, 2)}
+axis.args <- list(at=seq(-1, 1, by=0.25))
+legend.scale(c(-1, 1), color, axis.args=axis.args)
+```
+
+```{r save.fig, eval=FALSE, include=FALSE}
+for (group in groups) for (method in 'spearman') for (type in types) {
+    result <- paste(group, method, type, sep='_')
+    subset <- if (group == 'cases') cases else !cases
+    main_type <- if (type == 'adjusted') paste(type, 'by BMI') else type
+    main <- tools::toTitleCase(sprintf("%s's Correlations  –  %s  (%s)", method, main_type, group))
+    png(sprintf('results/corr-%s-%s-%s.png', method, type, group), width=1000, height=1200, type='cairo')
+    cor_plot(dat[subset, -(1:2)], main, correlations=cors[[result]])
+    dev.off()
+}
+
+png('results/corr-color-scale-vertical.png', width=100, height=1020, type='cairo')
+par(mar=c(2, 0, 2, 5))
+legend.scale(c(-1, 1), color, axis.args=axis.args, horizontal=FALSE)
+dev.off()
+png('results/corr-color-scale-horizontal.png', width=1000, height=100, type='cairo')
+par(mar=c(4, 2, 1, 2))
+legend.scale(c(-1, 1), color, axis.args=axis.args)
+dev.off()
+```
+
+<script>
+    uncollapse = function() {
+        $('.r-code-collapse')
+            .filter((i, elem) => !/\n/.test(elem.textContent))
+            .prev().find('button').click();
+    }
+    $(document).ready(() => setTimeout(uncollapse, 100))
+</script>

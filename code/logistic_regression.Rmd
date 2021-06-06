@@ -1,0 +1,275 @@
+---
+title: "Regressão Logística entre Concentrações de Miocinas e Fenótipos"
+author: "Leonardo R. Gama - leonardo.gama@usp.br"
+date: "01/09/2020"
+output:
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: false
+    code_folding: hide
+    df_print: kable
+---
+
+<!--
+   - MIT License
+   -
+   - Copyright 2021 Alexandre Ferreira Ramos
+   -
+   - Permission is hereby granted, free of charge, to any person obtaining a
+   - copy of this software and associated documentation files (the "Software"),
+   - to deal in the Software without restriction, including without limitation
+   - the rights to use, copy, modify, merge, publish, distribute, sublicense,
+   - and/or sell copies of the Software, and to permit persons to whom the
+   - Software is furnished to do so, subject to the following conditions:
+   -
+   - The above copyright notice and this permission notice shall be included in
+   - all copies or substantial portions of the Software.
+   -
+   - THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   - IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   - FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+   - THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   - LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   - FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   - DEALINGS IN THE SOFTWARE.
+   -->
+
+<!--
+   - Project:  ClinNutr2021 - AMPhyBio Laboratory <github.com/amphybio/ClinNutr2021>
+   - Authors:  Leonardo Gama <leonardo.gama@usp.br>
+   - Version:  1.0
+   - Created:  01-09-2020
+   - Updated:  05-06-2021
+   - Compile:  Rscript -e 'rmarkdown::render("logistic_regression.Rmd")'
+   -->
+
+```{r setup, include=FALSE}
+library(knitr)
+library(rprojroot)
+opts_knit$set(root.dir=find_root(has_file('LICENSE.txt')))
+opts_chunk$set(cache=TRUE, warning=FALSE, fig.align='center')
+```
+
+```{r imports, include=FALSE}
+pkgs <- c(
+          'magrittr'        # pipe operator (%>%)
+         )
+
+not_installed <- !pkgs %in% rownames(installed.packages())
+if (any(not_installed)) install.packages(pkgs[not_installed])
+lapply(pkgs, library, character=TRUE)
+```
+
+```{r data}
+data(myokines)
+
+# Use base 2 in log transformation for Odds Ratio interpretation.
+i <- EXCEL_COLS[c('AA', 'AP')]
+dat <- raw_dat[i[1]:i[2]] %>% log2()
+
+names(dat) <- gsub('[-. ]', '_', names(dat))
+dat <- dat[, order(names(dat))]
+
+myokines <- names(dat) %>% sub('_[a-z]+$', '', .) %>% unique()
+group <- factor(raw_dat[['Lab group (CLASSIF)']], levels=c('WSC', 'CC'))
+cases <- (group == 'CC')
+dat <- cbind(group, dat)
+```
+
+**Pedido do revisor.** Regressão logística considerando os dois grupos - WSC e
+CC:
+
+> _Regression analysis for presenting the role of myokines in cancer related
+> cachexia (i.e. logistic regression for binomial data - CC, WSC)_).
+
+## Cálculo ##
+
+```{r logit}
+model <- list()
+stats <- data.frame()
+for (var in names(dat)[-1]) {
+    form <- formula(paste('group ~', var))
+    fit <- glm(form, data=dat, family=binomial)
+    fit$OR <- exp(fit$coefficients[var])
+    fit$summary <- summary(fit)
+    fit$p_value <- fit$summary$coefficients[var, 4]
+    fit$confint <- suppressMessages(exp(confint(fit, var)))
+
+    model[[var]] <- fit
+    stats <- rbind(stats, list(
+        var,
+        sum(!is.na(dat[[var]])),
+        fit$OR,
+        fit$confint[1],
+        fit$confint[2],
+        fit$p_value
+    ))
+}
+rownames(stats) <- NULL
+colnames(stats) <- c('Variable', 'N', 'Odds Ratio', 'CI 95% lower', 'CI 95% higher', 'p-value')
+stats[['Adjusted p-value']] <- p.adjust(stats[['p-value']], method='hommel')
+stats[['FDR q-value']] <- p.adjust(stats[['p-value']], method='fdr')
+```
+
+Como apenas uma fração das amostras possui observações completas, decidimos
+gerar modelos de regressão logística independentes para cada variável.  Usamos
+transformação logarítmica para satisfazer melhor a assunção de linearidade
+entre variável independente e _log odds_ da variável resposta.  Escolhemos 2
+como base do logaritmo para facilitar a intrepretação dos resultados.
+
+A **razão de chances** é dada por $e^{\beta_1}$, sendo $\beta_1$ o coeficiente
+multiplicativo do modelo logístico:
+
+$$ \log \frac{p(y)}{1 - p(y)} = \beta_0 + \beta_1 x $$
+
+Os **_p_-valores** foram corrigidos para múltiplos testes usando o método de
+Hommel (1988).  O _q_-valores de _false discovery rate_ (FDR) foram calculados
+segundo Benjamin e Hochberg (1995).
+
+### Resultados ###
+
+```{r results, echo=FALSE}
+stats
+```
+
+O tamanho da amostra varia em até 127% (15–34) a depender da miociona e do
+sítio de coleta e, portanto, é preciso cuidado ao se comparar os números
+diretamente.  A correção tradicional para múltiplos testes aplicada ao grande
+número de variáveis reduziu consideravelmente o poder estatístico destes
+resultados.
+
+Não obstante, obtivemos 6 resultados com taxa de descoberta falsa de
+20%, quais sejam BDNF (plasma), FABP3 (plasma e tumor), FSTL-1 (músculo), IL-15
+(tumor) e Irisina (tumor).  Esse subconjunto das variáveis estudadas é bom
+candidato a investigações futuras, com a expectativa de não haver diferença
+real para apenas 1 ou 2 delas.
+
+Observada a significância de cada resultado, os valores das razões de chances
+(OR) devem ser interpretados da seguinte forma: se OR > 1, uma concentração
+maior da miosina está relacionada a maior chance do paciente com câncer
+apresentar caquexia; se OR < 1, uma concentração maior está relacionada a menor
+chance de apresentar caquexia; e, se OR ≈ 1, não há relação entre a
+concentração da miosina e a condição clínica.  Seja $[M]$ a concentração da
+miosina, o valor de OR indica em quantas vezes a chance aumenta quando a
+variável explicativa ($x = \log_2 [M]$) aumenta em uma unidade, ou seja, quando
+a concentração de miosina dobra:
+
+$$
+\text{OR}
+\quad=\quad \frac{\text{odds}\big(x + 1\big)}{\text{odds}\big(\,x\,\big)}
+\quad=\quad \frac{\text{odds}\big(\log_2 [M] + 1\big)}{\text{odds}\big(\log_2 [M]\big)}
+\quad=\quad \frac{\text{odds}\big(\log_2 \mathbf{2\!\cdot\![\boldsymbol{M}]}\big)}{\text{odds}\big(\log_2 [M]\big)}
+$$
+
+As miocinas com resultados de maior magnitude (OR > 3 ou OR < 1/3), que também
+estão entre os com menor _p_-valor, têm ORs concordantes entre si nos
+diferentes sítios (FABP3 e IL-15, para as quais todas as variávies indicando
+relação positiva com a resposta) ou ao menos não contrárias (irisina, em que a
+concetração no tumor indica relação positiva, enquanto a no músculo indica
+relação neutra).  Não sabemos exatamente como as miocinas se distribuem nos
+diferentes compartimentos anatômicos, mas esses são indícios indiretos de que
+os resultados são consistentes.
+
+```{r save.table, eval=FALSE, include=FALSE}
+write.table(stats, file='results/regression-statistics.tsv', sep='\t', row.names=FALSE, quote=FALSE)
+```
+
+---
+
+## Visualização ##
+
+```{r plot, fig.width=7, fig.height=14}
+myok_names <- unique(sub('_[^_]+$', '', names(model)))
+
+logit_plot <- function(var, vert_axis=FALSE) {
+    # Sample's points
+    if (!vert_axis) par(yaxt='n')  # suppress vertical axis
+    plot(dat[[var]], as.integer(group)-1, main=var, xlab="pg/mL", ylab="",
+         yaxp=c(0, 1, 4),  # vertical axis marks
+         mgp=c(1.8, 0.8, 0)  # labels positioning
+    )
+    par(yaxt='s')
+
+    # Regression curve
+    fit <- model[[var]]
+    f <- function(x) predict(fit, setNames(list(x), var), type='response')
+    curve(f, add=TRUE, col='red')
+    OR <- sprintf("OR = %.1f", fit$OR)
+    mtext(OR, side=1, line=-2, cex=0.8, font=ifelse(fit$p_value < .05, 2, 1))
+}
+
+par(
+        mfrow=c(length(myok_names), 3),
+        mar=c(3, 0, 2, 0),  # inner margins
+        oma=c(0, 3, 0, 2)   # outer margins
+)
+
+for (var in myok_names) {
+    logit_plot(paste0(var, '_muscle'), vert_axis=TRUE)
+    logit_plot(paste0(var, '_tumor'))
+    blood_var <- grep(paste0(var, '_(plasma|serum)'), names(dat), value=TRUE)
+    if (length(blood_var)) {
+        logit_plot(blood_var)
+    } else {
+        plot.new()
+    }
+}
+```
+
+## Estatísticas das Regressões ##
+
+```{r summary}
+for (var in names(model)) {
+    cat('\n>>> ', var, ' <<<\n')
+    print(model[[var]]$summary)
+}
+```
+
+---
+
+## Regressão Multivariada ##
+
+```{r mulitvariate}
+for (type in c('tumor', 'muscle', 'plasma')) {
+    cat(">>>  Regression model for myokines in", type, " <<<\n")
+
+    vars <- grep(type, names(dat), value=TRUE)
+    form <- vars %>% paste(collapse=' + ') %>% paste('group ~', .) %>% formula
+    form <- formula(paste('group ~', paste(vars, collapse=' + ')))
+    fit <- suppressWarnings(glm(form, data=dat, family=binomial))
+    print(summary(fit))
+
+    subset <- na.omit(dat[, c('group', vars)])
+    accuracy <- numeric()
+    for (sample in seq_len(nrow(subset))) {
+        fit <- suppressWarnings(glm(form, data=subset[-sample, ], family=binomial))
+        predicted_group <- predict(fit, subset[sample, ], type='response')
+        real_group <- subset$group[sample]
+        accuracy[sample] <- (predicted_group > 0.5) == (real_group == 'CC')
+    }
+    accuracy <- 2 * (sum(accuracy)/length(accuracy) - 0.5)
+    cat(sprintf("Bootstraped accuracy: %.0f%%", 100*accuracy), "\n\n\n")
+}
+
+for (myokine in myokines) {
+    cat(">>>  Regression model for the myokine ", sub('_', '-', myokine), " <<<\n")
+
+    vars <- grep(myokine, names(dat), value=TRUE)
+    form <- vars %>% paste(collapse=' + ') %>% paste('group ~', .) %>% formula
+    form <- formula(paste('group ~', paste(vars, collapse=' + ')))
+    fit <- suppressWarnings(glm(form, data=dat, family=binomial))
+    print(summary(fit))
+
+    subset <- na.omit(dat[, c('group', vars)])
+    accuracy <- numeric()
+    for (sample in seq_len(nrow(subset))) {
+        fit <- suppressWarnings(glm(form, data=subset[-sample, ], family=binomial))
+        predicted_group <- predict(fit, subset[sample, ], type='response')
+        real_group <- subset$group[sample]
+        accuracy[sample] <- (predicted_group > 0.5) == (real_group == 'CC')
+    }
+    accuracy <- 2 * (sum(accuracy)/length(accuracy) - 0.5)
+    cat(sprintf("Bootstraped accuracy: %.0f%%", 100*accuracy), "\n\n\n")
+}
+```

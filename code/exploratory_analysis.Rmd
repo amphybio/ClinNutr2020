@@ -1,0 +1,301 @@
+---
+title: "Análise Exploratória - Miocinas em Pacientes com Câncer"
+author: "Leonardo R. Gama - leonardo.gama@usp.br"
+date: "08/08/2020"
+output:
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: false
+    code_folding: show
+---
+
+<!--
+   - MIT License
+   -
+   - Copyright 2021 Alexandre Ferreira Ramos
+   -
+   - Permission is hereby granted, free of charge, to any person obtaining a
+   - copy of this software and associated documentation files (the "Software"),
+   - to deal in the Software without restriction, including without limitation
+   - the rights to use, copy, modify, merge, publish, distribute, sublicense,
+   - and/or sell copies of the Software, and to permit persons to whom the
+   - Software is furnished to do so, subject to the following conditions:
+   -
+   - The above copyright notice and this permission notice shall be included in
+   - all copies or substantial portions of the Software.
+   -
+   - THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   - IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   - FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+   - THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   - LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   - FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   - DEALINGS IN THE SOFTWARE.
+   -->
+
+<!--
+   - Project:  ClinNutr2021 - AMPhyBio Laboratory <github.com/amphybio/ClinNutr2021>
+   - Authors:  Leonardo Gama <leonardo.gama@usp.br>
+   - Version:  1.0
+   - Created:  08-08-2020
+   - Updated:  05-06-2021
+   - Compile:  Rscript -e 'rmarkdown::render("exploratory_analysis.Rmd")'
+   -->
+
+```{r setup, include=FALSE}
+library(knitr)
+library(rprojroot)
+opts_knit$set(root.dir=find_root(has_file('LICENSE.txt')))
+opts_chunk$set(cache=TRUE, fig.align='center')
+options(width=100)
+```
+
+```{r imports, include=FALSE}
+pkgs <- c(
+          'corrplot',       # correlation plot
+          'DMwR',           # k-nearest neighbors imputation
+          'magrittr',       # pipe operator (%>%)
+          'readxl',         # spreadsheet file reader
+          'tsne'            # t-SNE visualization
+         )
+
+not_installed <- !pkgs %in% rownames(installed.packages())
+if (any(not_installed)) install.packages(pkgs[not_installed])
+lapply(pkgs, library, character=TRUE)
+```
+
+_**Nota:** Algumas linhas de código foram omitidas para maior clareza. Ver
+arquivo `.Rmd`_
+
+## Entrada de dados
+
+A leitura dos dados foi feita diretamente a partir da planilha Microsoft Excel,
+usando a interface do RStudio. O código gerado (não mostrado) usa o pacote
+`readxl`, e salvamos a tabela lida no formato interno `.RData` para facilitar o
+uso em outras etapas.
+
+```{r input, echo=1:2}
+excel_file <- 'data/myokines.xlsx'
+rdata_file <- 'data/myokines.RData'
+
+EXCEL_COLS <- expand.grid(LETTERS, c('', LETTERS))
+EXCEL_COLS <- setNames(1:(26*27), paste0(EXCEL_COLS[[2]], EXCEL_COLS[[1]]))
+
+last_row <- 96
+last_col <- 'BG'
+cell_range <- sprintf('A1:%s%d', last_col, last_row)
+col_types <- rep('numeric', times=EXCEL_COLS[last_col]) 
+col_types[EXCEL_COLS[c('A', 'B', 'J', 'K', 'M', 'W')]] <- 'text'
+col_types[EXCEL_COLS[c('AV', 'BG')]] <- 'logical'
+
+raw_dat <- read_excel(excel_file, range=cell_range, col_types=col_types) %>% as.data.frame()
+raw_dat <- raw_dat[!is.na(raw_dat$ID), ]                                    # remove empty line
+colnames(raw_dat)[c(10, 12)] <- c('Tissue', 'Lab group (numeric)')  # unnamed colums
+colnames(raw_dat) <- sub('IL15', 'IL-15', colnames(raw_dat))        # standardize interleukin name
+
+save(raw_dat, EXCEL_COLS, file=rdata_file)
+```
+
+## Visão geral
+
+### Resumo da tabela
+
+Observando o resumo da tabela abaixo, notamos algumas caraterísticas do conjunto de dados
+importantes para a metodologia:
+
+* o número de amostras no grupo _caso_ (com caquexia) é cerca do dobro de no
+  _controle_ (sem caquexia);
+* algumas variáveis têm grande número de observações faltando;
+* mesmo considerando as diferentes unidades de medida, os valores das medidas
+  de metabólitos variam em muitas ordens de grandeza.
+
+```{r summary}
+# Number of samples in each group.
+group <- as.factor(raw_dat[['Lab group (CLASSIF)']])  # case red, control blue
+table(group)
+
+raw_dat %>% setNames(strtrim(names(raw_dat), 17)) %>% summary()
+```
+
+### Seleção de variávies de interesse
+
+Para análise exploratória, selecionamos as variáveis de maior interesse,
+relativas à dosagem de metabólitos (incluindo miocinas e citocinas).
+
+```{r subset, echo=1:4}
+metabolites <- raw_dat[, EXCEL_COLS['X']:EXCEL_COLS['AS']]      # subset
+names(metabolites) <- gsub('[-. ]', '_', names(metabolites))    # rename
+metabolites <- metabolites[, order(names(metabolites))]         # reorder
+vars <- names(metabolites)
+
+palette('Set 1')    # plotting colors (1 is red, 2 is blue)
+
+# Helper functions to set the plot layout.
+n <- nrow(metabolites)
+nvars <- ncol(metabolites)
+single_plot <- function() par(mfrow=c(1, 1))
+grid_plot <- function(n) {
+    nrows <- floor(sqrt(n))
+    par(mfrow=c(nrows, ceiling(n/nrows)))
+}
+```
+
+### Dados faltantes
+
+Devido ao observado no resumo dos dados, olhamos com mais atenção quais
+variáveis são mais afetadas por observações faltantes e como isso está
+distribuído entre as amostras e os grupos.
+
+```{r missing}
+# Number of missing observations for each variable.
+var_nas <- metabolites %>% is.na() %>% colSums() %>% sort(dec=TRUE)
+print.simple.list(var_nas)
+
+single_plot()
+hist(var_nas, breaks=0:20 * 5, xlab="Missing observations",
+     main="Variables with 'n' missing observations")
+
+# Number of samples missing 'n' observations.
+sample_nas <- metabolites %>% is.na() %>% rowSums()
+table(sample_nas)
+
+single_plot()
+h <- hist(sample_nas, breaks=max(sample_nas), col=1, xlab='n',
+          main="Samples with 'n' missing observations")
+hist(sample_nas[group == 'WSC'], breaks=h$breaks, col=2, add=TRUE)
+legend('topleft', c('cachexia', 'control'), fill=1:2)
+```
+
+Dado o exposto acima, as lacunas nas observações parecem ser uniformemente
+distribuídas entre as variáveis, tendo a maioria entre 15-30 observações (de 94
+possíveis). Também são igualmente distribuídas entre os dois grupos.
+
+## Visualização dos dados
+
+### Distribuição e teste de normalidade
+
+Aqui, visualizamos a forma geral da distribuição de cada variável e aplicamos
+um teste de normalidade, que aponta o quão bem um conjunto de valores é
+aproximado por uma distribuição gaussiana.
+
+```{r distribution, echo=-c(2, 3, 7), fig.width=9, fig.height=8}
+# Histogram + density
+grid_plot(nvars)
+old_par <- par(
+    mar=c(5, 2, 1.5, 0),
+    oma=c(0, 2, 3, 0)  # outer margin
+)
+for (var in vars) {
+    obs <- metabolites[[var]]
+
+    # Shapiro-Wilk normality test.
+    # Note: If the test is significant, the distribution is non-normal.
+    p1 <- shapiro.test(obs)$p.value  # the higher, the better
+    p2 <- shapiro.test(log10(obs))$p.value
+    p_text <- sprintf("Normality p: %.3f\nOf log(data): %.3f", p1, p2)
+
+    hist(obs, probability=TRUE, main=var, xlab=p_text, ylab='')
+    lines(density(obs, na.rm=TRUE), col=1)
+}
+mtext("Sample Distributions", line=0.5, font=2, cex=1.2, out=TRUE)
+mtext("Density", side=2, line=0.5, out=TRUE)
+par(old_par)
+```
+
+Verificamos que quase todas as variáveis se aproximam da distribuição gaussiana
+quando convertidas para a escala logarítmica. Portanto, usaremos essa escala.
+
+```{r log}
+# Convert data to log.
+metabolites <- metabolites %>% lapply(log10) %>% data.frame
+metabolites <- cbind(group, metabolites)
+```
+
+### Comparação entre grupos
+
+Comparamos a distribuição de cada variável entre os grupos e aproveitamos para
+verificar se as observações faltantes estão concentradas apenas em um grupo
+para alguma delas, o que não parece ser o caso. O _p-valor_ da estatística
+calculada se refere ao _teste t_ comum.
+
+```{r boxplot, echo=-c(2, 3, 5), fig.width=9, fig.height=8}
+# Boxplot + points
+grid_plot(nvars)
+mar <- par(mar=c(4, 2, 2, 1))
+for (var in vars) {
+    form <- formula(paste(var, '~ group'))
+    p <- t.test(form, data=metabolites)$p.value
+    p_text <- sprintf("T-test p: %.3f\n(n = %d)", p, sum(!is.na(metabolites[[var]])))
+    boxplot(form, data=metabolites, names=c('cachexia', 'control'), main=var, xlab=p_text, ylab='')
+    stripchart(form, data=metabolites, add=TRUE, pch=20, col=2, method='jitter', vertical=TRUE)
+}
+par(mar=mar)
+```
+
+As variáveis **FABP3 plasma**, **FABP3 tumor**, **IL-15 tumor**, **IL-6 serum**,
+**IL-8 serum** e **Irisin tumor** apresentam diferença significativa entre os
+grupos.
+
+### Correlações entre variáveis
+
+A seguir, usamos uma função gráfica da biblioteca `corrplot` para verificar
+visualmente quais variáveis são linearmente correlacionadas.
+
+```{r correlation, echo=-4, fig.width=6, fig.height=6}
+# Use pairwise correlations due to missing data.
+corr <- cor(metabolites[-1], use='pairwise.complete')
+
+single_plot()
+corrplot(corr, mar=c(0,0,3,1), order='hclust', tl.col='black')
+title("Pairwise Correlations")
+```
+
+### Visualização do espaço de variáves
+
+Por fim, utilizamos duas técnicas de redução de dimensionalidade/visualização para
+obter uma perspectiva da distribuição das amostras de cada grupo no espaço de
+variáveis. A análise de componente principal (PCA) permite visualizar a maior parte
+da variação dos dados em duas ou três dimensões. Já a t-SNE distorce essa variação
+e as distâncias entre as amostras, mas nos permite observar como as amostras estão
+agrupadas de forma geral.
+
+Porém, como esses métodos requerem dados completos, precisamos primeiro imputar
+(preencher) as observações faltantes. Para isso, usamos uma modificação da
+técnica de _k_-vizinhos próximos, que utiliza para imputação uma média dos
+valores de _k_ amostras "próximas", ou seja, semelhantes de acordo com os
+valores das variáveis sem observações faltando.
+
+```{r pca, fig.width=9, fig.height=5, message=FALSE}
+# Discard variables with too many missing observations in mostly complete samples.
+pca_dat <- metabolites[, !grepl('plasma|IL_15_serum', names(metabolites))]
+table(complete.cases(pca_dat))
+
+# Number of samples with 'n' missing observatios.
+pca_nas <- pca_dat %>% is.na() %>% rowSums()
+table(pca_nas)
+
+# Use only samples with at least 7 of 22 observations not missing.
+n_nas <- pca_nas[1 <= pca_nas & pca_nas <= 15] %>% unique() %>% sort()
+
+# Stepwise data imputation (completion) using k-nearest neighbors.
+complete <- pca_dat[pca_nas == 0, ]
+for (n in n_nas) {
+    complete <- rbind(complete, pca_dat[pca_nas == n, ])
+    complete <- knnImputation(complete, k=5)
+}
+
+# Principal component analysis.
+pca <- prcomp(complete[, -1], scale=TRUE)
+print(summary(pca), width=70)
+
+# First two PCA components + 2D t-distributed stochastic neighbor embedding.
+colors <- palette()[complete$group]
+layout(matrix(1:2, nrow=1), height=c(1.1, 1.1), respect=TRUE)
+pc1 <- sprintf("PC1 (%.0f%% of σ²)", 100*pca$sdev[1]**2/sum(pca$sdev**2))
+pc2 <- sprintf("PC2 (%.0f%% of σ²)", 100*pca$sdev[2]**2/sum(pca$sdev**2))
+plot(pca$x, col=colors, pch=20, xlab=pc1, ylab=pc2, main="Principal Component Analysis")
+legend('bottomleft', c('cachexia', 'control'), fill=1:2)
+xy <- suppressWarnings(tsne(complete[, -1], perplexity=10))
+plot(xy, col=colors, pch=20, main="t-SNE", xlab='', ylab='')
+```
