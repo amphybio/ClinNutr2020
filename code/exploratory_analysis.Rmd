@@ -39,7 +39,7 @@ output:
    - Authors:  Leonardo Gama <leonardo.gama@usp.br>
    - Version:  1.0
    - Created:  08-08-2020
-   - Updated:  05-06-2021
+   - Updated:  06-06-2021
    - Compile:  Rscript -e 'rmarkdown::render("exploratory_analysis.Rmd")'
    -->
 
@@ -54,10 +54,10 @@ options(width=100)
 ```{r imports, include=FALSE}
 pkgs <- c(
           'corrplot',       # correlation plot
-          'DMwR',           # k-nearest neighbors imputation
           'magrittr',       # pipe operator (%>%)
           'readxl',         # spreadsheet file reader
-          'tsne'            # t-SNE visualization
+          'tsne',           # t-SNE visualization
+          'VIM'             # k-nearest neighbors imputation
          )
 
 not_installed <- !pkgs %in% rownames(installed.packages())
@@ -266,7 +266,7 @@ técnica de _k_-vizinhos próximos, que utiliza para imputação uma média dos
 valores de _k_ amostras "próximas", ou seja, semelhantes de acordo com os
 valores das variáveis sem observações faltando.
 
-```{r pca, fig.width=9, fig.height=5, message=FALSE}
+```{r pca, fig.width=9, fig.height=5, message=FALSE, warning=FALSE}
 # Discard variables with too many missing observations in mostly complete samples.
 pca_dat <- metabolites[, !grepl('plasma|IL_15_serum', names(metabolites))]
 table(complete.cases(pca_dat))
@@ -282,7 +282,7 @@ n_nas <- pca_nas[1 <= pca_nas & pca_nas <= 15] %>% unique() %>% sort()
 complete <- pca_dat[pca_nas == 0, ]
 for (n in n_nas) {
     complete <- rbind(complete, pca_dat[pca_nas == n, ])
-    complete <- knnImputation(complete, k=5)
+    complete <- kNN(complete, numFun=weighted.mean, weightDist=TRUE, imp_var=FALSE)
 }
 
 # Principal component analysis.
