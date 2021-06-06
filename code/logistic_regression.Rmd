@@ -36,7 +36,7 @@ output:
    -->
 
 <!--
-   - Project:  ClinNutr2021 - AMPhyBio Laboratory <github.com/amphybio/ClinNutr2021>
+   - Project:  ClinNutr2020 - AMPhyBio Laboratory <github.com/amphybio/ClinNutr2020>
    - Authors:  Leonardo Gama <leonardo.gama@usp.br>
    - Version:  1.0
    - Created:  01-09-2020
