@@ -61,7 +61,8 @@ pkgs <- c(
          )
 
 not_installed <- !pkgs %in% rownames(installed.packages())
-if (any(not_installed)) install.packages(pkgs[not_installed])
+if (any(not_installed))
+    install.packages(pkgs[not_installed], Ncpus=parallel::detectCores())
 lapply(pkgs, library, character=TRUE)
 ```
 

@@ -40,7 +40,7 @@ output:
    - Authors:  Leonardo Gama <leonardo.gama@usp.br>
    - Version:  1.0
    - Created:  01-09-2020
-   - Updated:  05-06-2021
+   - Updated:  06-06-2021
    - Compile:  Rscript -e 'rmarkdown::render("logistic_regression.Rmd")'
    -->
 
@@ -57,7 +57,8 @@ pkgs <- c(
          )
 
 not_installed <- !pkgs %in% rownames(installed.packages())
-if (any(not_installed)) install.packages(pkgs[not_installed])
+if (any(not_installed))
+    install.packages(pkgs[not_installed], Ncpus=parallel::detectCores())
 lapply(pkgs, library, character=TRUE)
 ```
 
